@@ -27,13 +27,31 @@ class OpenPort(BaseModel):
 
 class AuthConfig(BaseModel):
     aai_token: Optional[str] = None
+    app_cred_id: Optional[str] = None
+    app_cred_secret: Optional[str] = None
     sub: str
     group: str = "default"
+
+    @model_validator(mode="after")
+    def validate_auth_method(self):
+        if not self.aai_token and not (self.app_cred_id and self.app_cred_secret):
+            raise ValueError("Fornire aai_token oppure app credentials")
+        return self
 
 class OpenStackInputs(BaseModel):
     flavor: str
     image: str
+    network_type: str = "private" ##############
     storage_size: Optional[str] = None
+    open_ports: Optional[list[OpenPort]] = []
+    model_config = {"extra": "ignore"}
+
+class AWSInputs(BaseModel):
+    instance_type: str
+    image: str
+    network_type: str = "private" ##############
+    storage_size: Optional[str] = None
+    open_ports: Optional[list[OpenPort]] = []
     model_config = {"extra": "ignore"}
 
 class OpenStackProvider(BaseModel):
@@ -45,8 +63,17 @@ class OpenStackProvider(BaseModel):
     inputs: OpenStackInputs
     model_config = {"extra": "ignore"}
 
+class AWSProvider(BaseModel):
+    region: str
+    ssh_key: str
+    aws_access_key: str
+    aws_secret_key: str
+    bastion_ip: Optional[str] = None
+    inputs: AWSInputs
+    model_config = {"extra": "ignore"}
+
 class CloudProviders(BaseModel):
-    aws: Optional[dict] = None
+    aws: Optional[AWSProvider] = None
     openstack: Optional[OpenStackProvider] = None
     model_config = {"extra": "forbid"}
 
@@ -82,66 +109,89 @@ class Job(BaseModel):
 
 def run_orchestration(job: Job):
     uuid = job.deployment_uuid
-    provider = job.orchestrator.target_provider
-    tf_dir = os.path.abspath("terraform")
+    provider = job.selected_provider.lower()
+    tf_dir = os.path.abspath(f"terraform/{provider}")
 
-    logger.info(f"Ricevuto Job {uuid}. Inizializzazione su Database...")
+    logger.info(f"Ricevuto Job {uuid} per {provider}. Inizializzazione...")
     start_log_deployment(uuid)
 
     try:
-        # 1. Autenticazione OpenStack
-        token_os = ""
-        if provider == "openstack":
-            os_data = job.cloud_providers.openstack
-            logger.info(f"[{uuid}] Scambio token AAI con Keystone...")
-            token_os = get_keystone_token(job.auth.aai_token, os_data.os_auth_url, os_data.os_project_id)
-            if not token_os:
-                raise Exception("Scambio token fallito: verifica aai_token o permessi Keystone")
-
-        # 2. Terraform via Docker
-        logger.info(f"[{uuid}] Lancio container Terraform Docker...")
         client = docker.from_env()
+        tf_vars = {}
 
-        # variabili Terraform
-        tf_vars = {
-            "TF_VAR_os_token": token_os,
-            "TF_VAR_os_tenant_id": os_data.os_project_id,           
-            "TF_VAR_bastion_ip": os_data.private_network_proxy_host, 
-            "TF_VAR_flavor_name": os_data.inputs.flavor,            
-            "TF_VAR_image_name": os_data.inputs.image,              
-            "TF_VAR_ssh_public_key": os_data.ssh_key,               
-            "TF_VAR_deployment_uuid": uuid
-        }
+        if provider == 'openstack':
+            os_data = job.cloud_providers.openstack
+            current_inputs = os_data.inputs
+            token_os = None
 
-        # Esecuzione del container
+            if job.auth.aai_token:
+                logger.info(f"[{uuid}] Metodo: OIDC Token. Scambio in corso...")
+                token_os = get_keystone_token(job.auth.aai_token, os_data.os_auth_url, os_data.os_project_id)
+                if not token_os:
+                    raise Exception("Scambio token fallito: verifica aai_token o permessi Keystone")
+            elif job.auth.app_cred_id:
+                logger.info(f"[{uuid}] Metodo: Application Credentials. Salto lo scambio token.")
+
+            ports_json = json.dumps([p.dict() for p in current_inputs.open_ports])
+
+            tf_vars = {
+                "TF_VAR_os_auth_url": os_data.os_auth_url,
+                "TF_VAR_os_tenant_id": os_data.os_project_id,
+                "TF_VAR_os_token": token_os if token_os else "",
+                "TF_VAR_os_app_cred_id": job.auth.app_cred_id or "",
+                "TF_VAR_os_app_cred_secret": job.auth.app_cred_secret or "",
+                "TF_VAR_flavor_name": os_data.inputs.flavor,
+                "TF_VAR_image_name": os_data.inputs.image,
+                "TF_VAR_ssh_public_key": os_data.ssh_key,
+                "TF_VAR_bastion_ip": os_data.private_network_proxy_host or "127.0.0.1",
+                "TF_VAR_deployment_uuid": uuid,
+                "TF_VAR_network_type": current_inputs.network_type,
+                "TF_VAR_open_ports": ports_json
+            }
+
+        elif provider == 'aws':
+            aws_data = job.cloud_providers.aws
+            current_inputs = aws_data.inputs
+            ports_json = json.dumps([p.dict() for p in current_inputs.open_ports])
+
+            logger.info(f"[{uuid}] Configurazione variabili AWS...")
+            tf_vars = {
+                "TF_VAR_aws_access_key": aws_data.aws_access_key,
+                "TF_VAR_aws_secret_key": aws_data.aws_secret_key,
+                "TF_VAR_aws_region": aws_data.region,
+                "TF_VAR_instance_type": aws_data.inputs.instance_type,
+                "TF_VAR_image": aws_data.inputs.image,
+                "TF_VAR_deployment_uuid": uuid,
+                "TF_VAR_open_ports": ports_json,
+                "TF_VAR_network_type": current_inputs.network_type,
+                "TF_VAR_public_ssh_key": aws_data.ssh_key
+            }
+
+        logger.info(f"[{uuid}] Lancio container Terraform per {provider}...")
         client.containers.run(
             image="hashicorp/terraform:1.5",
-            command="apply -auto-approve",
+            entrypoint="/bin/sh",
+            command="-c 'terraform init -no-color && terraform apply -auto-approve -no-color'",
             volumes={tf_dir: {'bind': '/src', 'mode': 'rw'}},
             working_dir="/src",
             environment=tf_vars,
-            remove=True,
-            detach=False
+            remove=True
         )
 
-        # 3. Recupero IP
-        logger.info(f"[{uuid}] Recupero IP della risorsa creata...")
-        vm_ip = client.containers.run(
+        vm_ip_bytes = client.containers.run(
             image="hashicorp/terraform:1.5",
             command="output -raw vm_ip",
             volumes={tf_dir: {'bind': '/src', 'mode': 'ro'}},
             working_dir="/src",
             remove=True
-        ).decode('utf-8').strip()
+        )
+        vm_ip = vm_ip_bytes.decode('utf-8').strip()
         
-        # 4. Chiusura Job
-        logger.info(f"[{uuid}] Orchestrazione completata. IP: {vm_ip}. Cloud-init in esecuzione sulla VM.")
-        update_log_status(uuid, "SUCCESS", logs="Infrastructure deployed. Cloud-init is installing Galaxy.", ip_address=vm_ip)
+        update_log_status(uuid, "SUCCESS", logs=f"Deployed on {provider}", ip_address=vm_ip)
 
     except Exception as e:
-        error_msg = str(e)
-        logger.error(f"[{uuid}] Errore durante l'orchestrazione: {error_msg}")
-        update_log_status(uuid, "FAILED", logs=error_msg)
+        logger.error(f"Errore: {e}")
+        update_log_status(uuid, "FAILED", logs=str(e))
 
 #################################################################################################
 
