@@ -4,6 +4,10 @@ import logging
 
 logger = logging.getLogger(__name__)
 
+def get_openstack_admin_creds():
+    ''' Da testare '''
+    return get_secrets("infrastructure/openstack/admin")
+
 def get_keystone_token(aai_token, auth_url, project_id):
     try:
         loader = loading.get_plugin_loader('v3oidcaccesstoken')

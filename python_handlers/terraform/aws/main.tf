@@ -91,9 +91,7 @@ resource "aws_instance" "galaxy_vm" {
   associate_public_ip_address = var.network_type == "public" ? true : false
 
   # Cloud-init per installare Galaxy
-  user_data = templatefile("${path.module}/cloudinit.sh", {
-    bastion_priv_ip = "127.0.0.1" # Placeholder per compatibilità col template
-  })
+  user_data = templatefile("${path.module}/cloudinit.sh")
 
   tags = {
     Name = "galaxy-aws-${var.deployment_uuid}"
