@@ -1,0 +1,12 @@
+docker_secret.txt
+orchestrator.log
+deployment_info.json
+*.tfstate
+*.tfstate.*
+terraform.tfvars
+.terraform/
+__pycache__/
+*.pyc
+.env
+*.pem
+*.key

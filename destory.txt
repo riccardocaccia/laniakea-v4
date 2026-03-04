@@ -1,0 +1,11 @@
+sudo docker run --rm \
+  -v $(pwd)/terraform:/src \
+  -w /src \
+  -e TF_VAR_os_token=$(python3 -c "from auth_utils.openstack_auth import get_keystone_token; import json; data=json.load(open('deployment_info.json')); print(get_keystone_token(data['auth']['aai_token'], data['cloud_providers']['openstack']['os_auth_url'], data['cloud_providers']['openstack']['os_project_id']))") \
+  -e TF_VAR_os_tenant_id=$(python3 -c "import json; print(json.load(open('deployment_info.json'))['cloud_providers']['openstack']['os_project_id'])") \
+  -e TF_VAR_bastion_ip="127.0.0.1" \
+  -e TF_VAR_image_name="placeholder" \
+  -e TF_VAR_flavor_name="placeholder" \
+  -e TF_VAR_ssh_public_key="placeholder" \
+  -e TF_VAR_deployment_uuid="destroy" \
+  hashicorp/terraform:1.5 destroy -auto-approve
