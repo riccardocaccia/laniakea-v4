@@ -12,7 +12,7 @@ def get_keystone_token(aai_token, auth_url, project_id):
     try:
         loader = loading.get_plugin_loader('v3oidcaccesstoken')
         
-        auth = loader.load_from_options(    # auth via access-token
+        auth = loader.load_from_options(
             auth_url=auth_url,
             identity_provider='recas-bari', ########
             protocol='openid',

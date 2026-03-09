@@ -175,7 +175,7 @@ def run_orchestration(job: Job):
             volumes={tf_dir: {'bind': '/src', 'mode': 'rw'}},
             working_dir="/src",
             environment=tf_vars,
-            remove=True
+            remove=True    # eliminate the container once finished
         )
 
         vm_ip_bytes = client.containers.run(

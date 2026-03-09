@@ -1,6 +1,6 @@
 vault_*
 orchestrator.log
-deployment_info.json
+deployment_info*
 *.tfstate
 *.tfstate.*
 terraform.tfvars
