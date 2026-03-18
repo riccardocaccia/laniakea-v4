@@ -5,9 +5,25 @@ import logging
 from vault_utils import get_secrets
 from auth_utils.openstack_auth import get_keystone_token
 
+# create a logging istance (for the destroy -> __name__) used for the debugging
 logger = logging.getLogger(__name__)
 
 def run_destroy(job):
+    """
+    Teardown function to destroy infrastructure if deployment fails or is terminated.
+
+    This function dynamically resolves the Terraform working directory based on the selected 
+    cloud provider (OpenStack or AWS). It initializes a Docker client to execute Terraform 
+    commands within an isolated environment. 
+
+    Security credentials are retrieved 'just-in-time' from HashiCorp Vault:
+    - For OpenStack: Uses either a temporary Keystone token (exchanged from an AAI token) 
+      or Application Credentials.
+    - For AWS: Retrieves Access Key and Secret Key based on the user's group.
+
+    Finally, it launches a short-lived Docker container to run 'terraform destroy', 
+    ensuring all cloud resources are purged and the host system remains clean.
+    """
     uuid = job.deployment_uuid
     provider = job.selected_provider.lower()
     group = job.auth.group
@@ -20,14 +36,14 @@ def run_destroy(job):
         logger.error(f"[{uuid}] Provider sconosciuto: {provider}")
         return
 
-    logger.info(f"[{uuid}] Avvio DISTRUZIONE su {provider} usando {tf_dir}...")
+    logger.info(f"[{uuid}] starting DESTRUCTION on {provider} using {tf_dir}...")
 
     try:
         client = docker.from_env()
         secrets = get_secrets(f"SECRET/infrastructure/{provider}/{group}")
 
         if not secrets:
-            raise Exception(f"Segreti non trovati in Vault per il destroy su {provider}")
+            raise Exception(f"No secrets found in the Vault to  perform the destroy on {provider}")
 
         public_key = secrets.get('ssh_key_public', 'dummy')
 
@@ -36,6 +52,7 @@ def run_destroy(job):
             "TF_VAR_ssh_public_key": str(public_key).strip(),
             "TF_VAR_image_name": "dummy",
             "TF_VAR_bastion_ip": "0.0.0.0",
+            # artificial list in json format
             "TF_VAR_open_ports": json.dumps([]),
         }
 
@@ -46,7 +63,8 @@ def run_destroy(job):
             app_cred_secret = ""
 
             if job.auth.aai_token and job.auth.aai_token.strip():
-                logger.info(f"[{uuid}] Scambio token AAI per il destroy OpenStack...")
+                logger.info(f"[{uuid}] AAI token exchange for OpenstStack resources destroy...")
+                # token retrieving
                 os_token = get_keystone_token(
                     job.auth.aai_token,
                     os_data.os_auth_url,
@@ -85,6 +103,7 @@ def run_destroy(job):
                 "TF_VAR_bastion_ip": aws_data.bastion_ip or "0.0.0.0",
             })
 
+        # setting the docker container for terraform 
         client.containers.run(
             image="hashicorp/terraform:1.5",
             entrypoint="/bin/sh",
@@ -92,9 +111,9 @@ def run_destroy(job):
             volumes={tf_dir: {'bind': '/src', 'mode': 'rw'}},
             working_dir="/src",
             environment=tf_vars,
-            remove=True
+            remove=True  # container destroyed automaticcaly afther the command
         )
-        logger.info(f"[{uuid}] Risorse distrutte con successo su {provider}.")
+        logger.info(f"[{uuid}] Succesfully destroyed all the resources on {provider}.")
 
     except Exception as e:
-        logger.error(f"[{uuid}] Errore critico durante il destroy su {provider}: {e}")
+        logger.error(f"[{uuid}] CRITICAL ERROR during the destruction on {provider}: {e}")
