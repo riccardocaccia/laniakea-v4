@@ -3,9 +3,14 @@ import stat
 import logging
 from ansible_worker import AnsibleWorker
 
+# create a logging istance (for the ansible_agent -> __name__) used for the debugging
 logger = logging.getLogger(__name__)
 
 def run_ansible_step(job, playbook_url, requirements_url):
+    """
+    Passes the needed info to the ansible worker funcions in order to 
+    configure the machine with the correct software.
+    """
     uuid = job.deployment_uuid
     key_path = f"keys/{uuid}.pem"
     
@@ -14,10 +19,10 @@ def run_ansible_step(job, playbook_url, requirements_url):
     try:
         success_prep, msg = worker.prepare_environment()
         if not success_prep:
-            logger.error(f"[{uuid}] Errore preparazione Ansible: {msg}")
+            logger.error(f"[{uuid}] ERROR in Ansible preparation: {msg}")
             return False
 
-        # Identificazione Bastion
+        # bastion identification
         bastion = "0.0.0.0"
         if job.selected_provider.lower() == 'openstack':
             os_data = job.cloud_providers.openstack
@@ -30,10 +35,10 @@ def run_ansible_step(job, playbook_url, requirements_url):
             bastion_ip=bastion
         )
         
-        worker.cleanup() # Pulisce /tmp/uuid
+        worker.cleanup() # clean /tmp/uuid
         return success
 
     except Exception as e:
-        logger.error(f"[{uuid}] Eccezione in Ansible Step: {e}")
+        logger.error(f"[{uuid}] EXCEPTION in an Ansible step: {e}")
         worker.cleanup()
         return False
