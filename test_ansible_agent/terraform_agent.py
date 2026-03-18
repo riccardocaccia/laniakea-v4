@@ -12,7 +12,7 @@ from vault_utils import get_secrets
 from ansible_agent import run_ansible_step
 from destroy import run_destroy
 
-# Configurazione Logging
+# Logging configuration for debugging. Prints custom debug messages to help the debug process
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s [%(levelname)s] %(message)s',
@@ -23,36 +23,54 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# classi
-
 class OpenPort(BaseModel):
+    """
+    Port class specifically used for a specific input that user can specify:
+
+    - which port to open in the deployed machine.
+    """
     port: int
     protocol: str
     cidr: str
 
 class AuthConfig(BaseModel):
+    """
+    AAI token class.
+    """
     aai_token: Optional[str] = None
     sub: str
     group: str = "default"
 
 class OpenStackInputs(BaseModel):
+    """
+    OpenStack required inpusts for the customization of the VM.
+    """
     flavor: str
     image: str
     network_type: str = "private"
     open_ports: list[OpenPort] = []
 
 class AWSInputs(BaseModel):
+    """
+    AWS required inputs for the customization of the VM.
+    """
     instance_type: str
     image: str
     network_type: str = "private"
     open_ports: list[OpenPort] = []
 
 class TemplateConfig(BaseModel):
+    """
+    Template configuration informations.
+    """
     url: str = ""
     path: str = "terraform/openstack"
     branch: str = "main"
 
 class OpenStackProvider(BaseModel):
+    """
+    OpenStack PROVIDER information used for the deployment.
+    """
     os_auth_url: str
     os_project_id: str
     region_name: str = "RegionOne"
@@ -66,25 +84,51 @@ class OpenStackProvider(BaseModel):
     inputs: OpenStackInputs
 
 class AWSProvider(BaseModel):
+    """
+    AWS PROVIDER information used for the deployment.
+    """
     region: str
     bastion_ip: Optional[str] = None
     template: TemplateConfig = TemplateConfig(path="terraform/aws")
     inputs: AWSInputs
 
 class CloudProviders(BaseModel):
+    """
+    Chosen provider.
+    """
     aws: Optional[AWSProvider] = None
     openstack: Optional[OpenStackProvider] = None
 
 class Job(BaseModel):
+    """
+    Basic job despcription containing an unique uuid and other information
+    useful for the deployment.
+    """
     deployment_uuid: str
     auth: AuthConfig
     selected_provider: str
     cloud_providers: CloudProviders
     vm_ip: Optional[str] = None
 
-# TERRAFORM ORCHESTRATION
-
 def run_orchestration(job: Job):
+    """
+    Core orchestration engine responsible for the end-to-end lifecycle of a cloud deployment.
+
+    The function follows a strict sequential pipeline:
+    1. Infrastructure Initialization: Resolves the local Terraform template paths and 
+       synchronizes the deployment status with the tracking database.
+    2. Secure Credential Sourcing: Interfaces with HashiCorp Vault to retrieve sensitive 
+       SSH keys and provider-specific API credentials (Keystone tokens or AWS keys).
+    3. Containerized Provisioning: Deploys a transient Docker container running Terraform 
+       to create the virtual infrastructure, ensuring environment parity and portability.
+    4. State Retrieval: Extracts the newly created VM's IP address from Terraform's 
+       state output to facilitate the next configuration phase.
+    5. Configuration Management: Hands over the control to the Ansible Agent for 
+       automated software stack installation.
+    6. Automated Rollback (Fail-Safe): Implements a 'Destroy-on-Failure' policy. If any 
+       step in the Ansible configuration fails, it triggers an emergency cleanup to 
+       delete the VM, preventing billing leakages and 'ghost' resources.
+    """
     uuid = job.deployment_uuid
     provider = job.selected_provider.lower()
     group = job.auth.group
@@ -96,28 +140,28 @@ def run_orchestration(job: Job):
 
     tf_dir = os.path.abspath(template_path)
 
-    logger.info(f"[{uuid}] Avvio provisioning infrastruttura su {provider}...")
+    logger.info(f"[{uuid}] Provisioning started on {provider}...")
     start_log_deployment(uuid)
     update_log_status(uuid, "INFRASTRUCTURE_PROVISIONING_TERRAFORM")
 
     try:
         client = docker.from_env()
         
-        # recupero segreti da vault
+        # Vault secret retrieving
         secrets = get_secrets(f"SECRET/infrastructure/{provider}/{group}")
         if not secrets:
-            raise Exception(f"Segreti non trovati in Vault per il gruppo: {group}")
+            raise Exception(f"ERROR: did not find any secrets for the group: {group}")
         
         public_key = secrets.get('ssh_key_public')
         if not public_key:
-            raise Exception("ERRORE: ssh_key_public non trovata nei segreti del Vault!")
+            raise Exception("ERROR: ssh_key_public not found in the Vault!")
 
         tf_vars = {
             "TF_VAR_deployment_uuid": str(uuid),
             "TF_VAR_ssh_public_key": str(public_key).strip()
         }
 
-        #variabili specifiche per i diversi provider
+        # specific variables for different providers
         if provider == 'openstack':
             os_data = job.cloud_providers.openstack
             os_token = ""
@@ -162,9 +206,9 @@ def run_orchestration(job: Job):
                 "TF_VAR_open_ports": json.dumps([p.model_dump() for p in aws_data.inputs.open_ports])
             })
 
-        # esecuzione Terraform 
-        logger.info(f"[{uuid}] Lancio container Terraform per {provider}...")
-
+        
+        logger.info(f"[{uuid}] Running a container with Terraform for {provider}...")
+        # Docker container informations
         client.containers.run(
             image="hashicorp/terraform:1.5",
             entrypoint="/bin/sh",
@@ -176,29 +220,30 @@ def run_orchestration(job: Job):
         )
 
         # recupero IP della vm creata
-        logger.info(f"[{uuid}] Recupero output vm_ip...")
+        logger.info(f"[{uuid}] output vm_ip retrieving...")
 
         vm_ip_bytes = client.containers.run(
             image="hashicorp/terraform:1.5",
             command="output -raw vm_ip",
-            volumes={tf_dir: {'bind': '/src', 'mode': 'ro'}},   # qui read only 
+            volumes={tf_dir: {'bind': '/src', 'mode': 'ro'}},   # read only because we are looking for the ip
             working_dir="/src",
             remove=True
         )
+        # converting the ip to human-readable
         vm_ip = vm_ip_bytes.decode('utf-8').strip()
         job.vm_ip = vm_ip
         
         # Wait the deployment to be completed
-        logger.info(f"[{uuid}] Attesa di 30 secondi per l'avvio di SSH su Rocky...")
+        logger.info(f"[{uuid}] Wait 30 seconds for the SSH on Rocky...")
         time.sleep(30)
 
-        # Fine task terraform
         update_log_status(uuid, "INFRASTRACTURE_READY", ip_address=vm_ip)
-        logger.info(f"[{uuid}] Infrastruttura creata con successo. IP: {vm_ip}")
+        logger.info(f"[{uuid}] Infrastructure successfully deployed. IP: {vm_ip}")
 
         ########### PARSING TEMPLATE YAML
         with open("repo_url_template.yml", "r") as yf:
             tpl = yaml.safe_load(yf)
+            
         pb_url = tpl['resources']['ansible']['playbook']
         req_url = tpl['resources']['ansible']['requirements']
 
@@ -206,15 +251,15 @@ def run_orchestration(job: Job):
         ansible_ok = run_ansible_step(job, pb_url, req_url)
 
         if not ansible_ok:
-            logger.error(f"[{uuid}] Ansible fallito! Eseguo DESTROY di emergenza...")
-            run_destroy(job) # Pulisce la VM su OpenStack/AWS
-            update_log_status(uuid, "FAILED", logs="Ansible fallito. VM distrutta automaticamente.")
+            logger.error(f"[{uuid}] Ansible has failed! Running emergency DESTROY...")
+            run_destroy(job) # clean the broken VM on OpenStack/AWS
+            update_log_status(uuid, "FAILED", logs="Ansible has failed! Resources destroyed.")
         else:
             update_log_status(uuid, "READY")
-            logger.info(f"[{uuid}] Deployment completato con successo.")
+            logger.info(f"[{uuid}] Deployment successfully completed.")
 
     except Exception as e:
-        logger.error(f"[{uuid}] Errore critico Terraform: {e}")
+        logger.error(f"[{uuid}] Critical Terraform ERROR: {e}")
         run_destroy(job)
         update_log_status(uuid, "FAILED", logs=str(e))
 
