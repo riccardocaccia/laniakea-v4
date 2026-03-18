@@ -25,18 +25,11 @@ class AnsibleWorker:
                 f.write(requests.get(self.requirements_url).content)
 
             ansible_cfg = os.path.join(self.base_dir, "ansible.cfg")
-
             with open(ansible_cfg, "w") as f:
                 f.write("[defaults]\n")
-                f.write("pipelining = True\n")
                 f.write(f"roles_path = {os.path.join(self.base_dir, 'roles')}\n")
                 f.write("host_key_checking = False\n")
-                f.write("[privilege_escalation]\n")
-                f.write("become = True\n")
                 f.write("become_method = sudo\n")
-                f.write("become_user = root\n")
-                f.write("become_ask_pass = False\n")
-
 
             roles_path = os.path.join(self.base_dir, "roles")
             subprocess.run([
@@ -62,12 +55,11 @@ class AnsibleWorker:
             f"ansible-playbook -i {target_ip}, -u rocky "
             f"--private-key {ssh_key_path} "
             f"--ssh-common-args \"{ssh_args}\" "
-            f"-e \"ansible_remote_tmp=/tmp/.ansible-rocky "
-            f"ansible_become=true "
-            f"ansible_become_method=sudo "
-            f"ansible_become_user=root\" "
+            f"-e \"ansible_distribution=RedHat ansible_os_family=RedHat "
+            f"ansible_distribution_major_version=9 "
+            f"ansible_remote_tmp=/tmp/.ansible-rocky\" "
             f"{self.playbook_path}"
-            )
+        )
 
         logger.info(f"[{self.uuid}] Esecuzione Ansible su {target_ip}...")
         res = subprocess.run(cmd, shell=True)

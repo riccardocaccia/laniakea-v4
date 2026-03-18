@@ -4,6 +4,6 @@ description: URL to Laniakea GitHub repo
 resources:
   ansible:
     requirements: https://raw.githubusercontent.com/Laniakea-elixir-it/laniakea-nebula/refs/heads/main/terraform/ansible/requirements.yml
-    playbook: https://raw.githubusercontent.com/riccardocaccia/laniakea-nebula/clean-main/terraform/ansible/deploy-galaxy.yml
+    playbook: https://raw.githubusercontent.com/Laniakea-elixir-it/laniakea-nebula/refs/heads/main/terraform/ansible/deploy-galaxy.yml
   tosca:
     template: https://raw.githubusercontent.com/Laniakea-elixir-it/tosca-templates/refs/heads/master/galaxy/galaxy.yaml

@@ -47,6 +47,21 @@ variable "os_region" {
   default = "RegionOne"
 }
 
+variable "endpoint_network" {
+  type    = string
+  default = ""
+}
+
+variable "endpoint_volumev3" {
+  type    = string
+  default = ""
+}
+
+variable "endpoint_image" {
+  type    = string
+  default = ""
+}
+
 variable "ssh_public_key" {
   type = string
 }

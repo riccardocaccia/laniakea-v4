@@ -13,14 +13,15 @@ provider "openstack" {
   region                        = var.os_region
   tenant_id                     = var.os_tenant_id
   token                         = var.os_token
-  application_credential_id      = var.os_app_cred_id
+  application_credential_id     = var.os_app_cred_id
   application_credential_secret = var.os_app_cred_secret
+  allow_reauth                  = var.os_token != "" ? false : true
 
-#  endpoint_overrides = {
-#    "network"  = "https://neutron.recas.ba.infn.it/v2.0/"
-#    "volumev3" = "https://cinder.recas.ba.infn.it/v3/"
-#    "image"    = "https://glance.recas.ba.infn.it/v2/"
-#  }
+  endpoint_overrides = {
+    "network"  = var.endpoint_network
+    "volumev3" = var.endpoint_volumev3
+    "image"    = var.endpoint_image
+  }
 }
 
 # --- DATA SOURCES ---
