@@ -3,6 +3,10 @@ from psycopg2.extras import RealDictCursor
 import datetime
 
 def get_db_connection():
+    """
+    Connection function to write and retrieve informations from the Data base
+    """
+    # CHANGE HERE
     return psycopg2.connect(
         host="localhost",
         database="test_orchestrator_db",
@@ -11,9 +15,19 @@ def get_db_connection():
     )
 
 def start_log_deployment(deployment_uuid, status="IN_PROGRESS"):
+    """
+    Initializes or updates the deployment record in the tracking database.
+
+    This function performs an 'UPSERT' operation:
+    - If the deployment UUID is new, it creates a fresh entry with timestamps and the initial status.
+    - If the UUID already exists, it updates the status and 'update_time' to reflect the restart.
+
+    This ensures that the orchestration lifecycle is traceable by external monitoring tools 
+    or dashboards from the very beginning of the process.
+    """
     conn = get_db_connection()
+    # create a cursor that will write inside the db
     cur = conn.cursor()
-    # Usiamo creation_time e update_time come nel tuo schema
     cur.execute(
         """
         INSERT INTO deployments (uuid, status, creation_time, update_time) 
@@ -28,6 +42,11 @@ def start_log_deployment(deployment_uuid, status="IN_PROGRESS"):
     conn.close()
 
 def update_log_status(deployment_uuid, status, logs=None, ip_address=None):
+    """
+    This function, updates the deployment records.
+
+    'Update log status' performs an UPDATE of the status and time of a deployment in real time. 
+    """
     conn = get_db_connection()
     cur = conn.cursor()
     cur.execute(
