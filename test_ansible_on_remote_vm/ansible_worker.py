@@ -6,6 +6,11 @@ import logging
 
 logger = logging.getLogger(__name__)
 
+GROUP_VARS_URL = "https://raw.githubusercontent.com/riccardocaccia/laniakea-nebula/clean-main/terraform/ansible/group_vars/galaxy.yml"
+NGINX_TEMPLATE_URL = "https://raw.githubusercontent.com/riccardocaccia/laniakea-nebula/clean-main/terraform/ansible/templates/nginx/galaxy.j2"
+
+ANSIBLE_VENV = "/tmp/ansible-venv"
+
 class AnsibleWorker:
     def __init__(self, playbook_url, requirements_url, uuid):
         self.playbook_url = playbook_url
@@ -14,14 +19,24 @@ class AnsibleWorker:
         self.base_dir = f"/tmp/{uuid}"
         self.playbook_path = os.path.join(self.base_dir, "deploy.yml")
         self.requirements_path = os.path.join(self.base_dir, "requirements.yml")
+        self.group_vars_path = os.path.join(self.base_dir, "group_vars", "all.yml")
+        self.nginx_template_path = os.path.join(self.base_dir, "templates", "nginx", "galaxy.j2")
 
     def prepare_environment(self):
         try:
             os.makedirs(self.base_dir, exist_ok=True)
+            os.makedirs(os.path.join(self.base_dir, "group_vars"), exist_ok=True)
+            os.makedirs(os.path.join(self.base_dir, "templates", "nginx"), exist_ok=True)
+
             with open(self.playbook_path, "wb") as f:
                 f.write(requests.get(self.playbook_url).content)
             with open(self.requirements_path, "wb") as f:
                 f.write(requests.get(self.requirements_url).content)
+            with open(self.group_vars_path, "wb") as f:
+                f.write(requests.get(GROUP_VARS_URL).content)
+            with open(self.nginx_template_path, "wb") as f:
+                f.write(requests.get(NGINX_TEMPLATE_URL).content)
+
             return True, "OK"
         except Exception as e:
             return False, str(e)
@@ -49,15 +64,27 @@ class AnsibleWorker:
         remote = f"rocky@{target_ip}"
 
         steps = [
-            f"{ssh_base} {remote} 'sudo mkdir -p /tmp/galaxy-deploy && sudo chown rocky /tmp/galaxy-deploy'",
+            # 1. Crea struttura directory sulla VM
+            f"{ssh_base} {remote} 'sudo mkdir -p /tmp/galaxy-deploy/group_vars /tmp/galaxy-deploy/templates/nginx && sudo chown -R rocky /tmp/galaxy-deploy'",
+
+            # 2. Copia tutti i file
             f"{scp_base} {self.playbook_path} {remote}:/tmp/galaxy-deploy/deploy.yml",
             f"{scp_base} {self.requirements_path} {remote}:/tmp/galaxy-deploy/requirements.yml",
-            f"{ssh_base} {remote} 'sudo dnf install -y python3-pip && sudo pip3 install ansible'",
-            f"{ssh_base} {remote} 'sudo /usr/local/bin/ansible-galaxy install -r /tmp/galaxy-deploy/requirements.yml -p /tmp/galaxy-deploy/roles'",
+            f"{scp_base} {self.group_vars_path} {remote}:/tmp/galaxy-deploy/group_vars/all.yml",
+            f"{scp_base} {self.nginx_template_path} {remote}:/tmp/galaxy-deploy/templates/nginx/galaxy.j2",
+
+            # 3. Crea virtualenv e installa ansible
+            f"{ssh_base} {remote} 'sudo dnf install -y python3-pip && sudo python3 -m venv {ANSIBLE_VENV} && sudo {ANSIBLE_VENV}/bin/pip install ansible \"virtualenv<20.22\"'",
+
+            # 4. Installa ruoli ansible
+            f"{ssh_base} {remote} 'sudo {ANSIBLE_VENV}/bin/ansible-galaxy install -r /tmp/galaxy-deploy/requirements.yml -p /tmp/galaxy-deploy/roles'",
+
+            # 5. Esegui playbook in locale sulla VM come root dalla directory corretta
             (
                 f"{ssh_base} {remote} "
-                f"'sudo ANSIBLE_ROLES_PATH=/tmp/galaxy-deploy/roles "
-                f"/usr/local/bin/ansible-playbook "
+                f"'cd /tmp/galaxy-deploy && "
+                f"sudo ANSIBLE_ROLES_PATH=/tmp/galaxy-deploy/roles "
+                f"{ANSIBLE_VENV}/bin/ansible-playbook "
                 f"-i localhost, -c local "
                 f"/tmp/galaxy-deploy/deploy.yml "
                 f"2>&1 | sudo tee /tmp/galaxy-deploy/ansible.log; "
