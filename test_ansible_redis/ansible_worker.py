@@ -4,116 +4,104 @@ import shutil
 import requests
 import logging
 
-# create a logging istance (for the ansible_worker -> __name__) used for the debugging
 logger = logging.getLogger(__name__)
 
+GROUP_VARS_URL = "https://raw.githubusercontent.com/riccardocaccia/laniakea-nebula/clean-main/terraform/ansible/group_vars/galaxy.yml"
+NGINX_TEMPLATE_URL = "https://raw.githubusercontent.com/riccardocaccia/laniakea-nebula/clean-main/terraform/ansible/templates/nginx/galaxy.j2"
+
+ANSIBLE_VENV = "/tmp/ansible-venv"
+
 class AnsibleWorker:
-    """
-    Class that describe an Ansible Worker that prepare the enviroment by downloading, in the 
-    local enviroment: 
-    
-    - the playbooks 
-    - the requirements 
-    - writes the Ansible configuaration file
-
-    And then run the real execution on the remote machine with the execute deployment function.
-
-    Cleanup is used to have and run always the most recent version of requirements and playbook.
-    """
     def __init__(self, playbook_url, requirements_url, uuid):
         self.playbook_url = playbook_url
         self.requirements_url = requirements_url
         self.uuid = uuid
         self.base_dir = f"/tmp/{uuid}"
-        # Paths for deploy and playbook here
         self.playbook_path = os.path.join(self.base_dir, "deploy.yml")
         self.requirements_path = os.path.join(self.base_dir, "requirements.yml")
+        self.group_vars_path = os.path.join(self.base_dir, "group_vars", "all.yml")
+        self.nginx_template_path = os.path.join(self.base_dir, "templates", "nginx", "galaxy.j2")
 
     def prepare_environment(self):
-        """
-        Sets up the local execution environment.
-        1. Creates a unique temporary directory.
-        2. Downloads playbooks and role requirements from remote URLs.
-        3. Generates a custom ansible.cfg to tune performance and bypass interactive prompts.
-        4. Installs necessary Ansible Roles via ansible-galaxy.
-        """
         try:
             os.makedirs(self.base_dir, exist_ok=True)
+            os.makedirs(os.path.join(self.base_dir, "group_vars"), exist_ok=True)
+            os.makedirs(os.path.join(self.base_dir, "templates", "nginx"), exist_ok=True)
 
             with open(self.playbook_path, "wb") as f:
                 f.write(requests.get(self.playbook_url).content)
             with open(self.requirements_path, "wb") as f:
                 f.write(requests.get(self.requirements_url).content)
+            with open(self.group_vars_path, "wb") as f:
+                f.write(requests.get(GROUP_VARS_URL).content)
+            with open(self.nginx_template_path, "wb") as f:
+                f.write(requests.get(NGINX_TEMPLATE_URL).content)
 
-            ansible_cfg = os.path.join(self.base_dir, "ansible.cfg")
-
-            with open(ansible_cfg, "w") as f:
-                f.write("[defaults]\n")
-                f.write("pipelining = True\n")
-                f.write(f"roles_path = {os.path.join(self.base_dir, 'roles')}\n")
-                f.write("host_key_checking = False\n")
-                f.write("[privilege_escalation]\n")
-                f.write("become = True\n")
-                f.write("become_method = sudo\n")
-                f.write("become_user = root\n")
-                f.write("become_ask_pass = False\n")
-
-
-            roles_path = os.path.join(self.base_dir, "roles")
-            # RUN the Ansible command on the cli
-            subprocess.run([
-                "ansible-galaxy", "install", "-r", self.requirements_path, "-p", roles_path
-            ], check=True)
             return True, "OK"
-            
         except Exception as e:
             return False, str(e)
 
     def execute_deployment(self, target_ip, ssh_key_path, bastion_ip=None):
-        """
-        Triggers the actual Ansible playbook execution.
-        
-        It constructs a complex shell command that includes:
-        - SSH ProxyCommand for Bastion host traversal (if required).
-        - Environment overrides for role paths and configuration.
-        - Privilege escalation settings to ensure the user has root access.
-        
-        Args:
-            target_ip (str): IP of the destination VM.
-            ssh_key_path (str): Local path to the private key for authentication.
-            bastion_ip (str, optional): IP of the jump host for private network access.
-        """
-        roles_path = os.path.join(self.base_dir, "roles")
-        ssh_args = "-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null"
-        # if the user specify the will of using a bastion host the proxy connection is essential
+        ssh_base = (
+            f"ssh -i {ssh_key_path} "
+            f"-o StrictHostKeyChecking=no "
+            f"-o UserKnownHostsFile=/dev/null "
+        )
+        scp_base = (
+            f"scp -i {ssh_key_path} "
+            f"-o StrictHostKeyChecking=no "
+            f"-o UserKnownHostsFile=/dev/null "
+        )
+
         if bastion_ip and bastion_ip != "0.0.0.0":
-            ssh_args += (
-                f" -o ProxyCommand='ssh -i {ssh_key_path} "
+            proxy = (
+                f"-o ProxyCommand='ssh -i {ssh_key_path} "
                 f"-o StrictHostKeyChecking=no -W %h:%p rocky@{bastion_ip}'"
             )
-        # complete command to run ansible on the target machine
-        cmd = (
-            f"ANSIBLE_CONFIG={os.path.join(self.base_dir, 'ansible.cfg')} "
-            f"ANSIBLE_ROLES_PATH={roles_path} "
-            f"ansible-playbook -i {target_ip}, -u rocky "
-            f"--private-key {ssh_key_path} "
-            f"--ssh-common-args \"{ssh_args}\" "
-            f"-e \"ansible_remote_tmp=/tmp/.ansible-rocky "
-            f"ansible_become=true "
-            f"ansible_become_method=sudo "
-            f"ansible_become_user=root\" "
-            f"{self.playbook_path}"
-            )
+            ssh_base += proxy + " "
+            scp_base += proxy + " "
 
-        logger.info(f"[{self.uuid}] Esecuzione Ansible su {target_ip}...")
-        res = subprocess.run(cmd, shell=True)
-        
-        return res.returncode == 0
+        remote = f"rocky@{target_ip}"
+
+        steps = [
+            # 1. Crea struttura directory sulla VM
+            f"{ssh_base} {remote} 'sudo mkdir -p /tmp/galaxy-deploy/group_vars /tmp/galaxy-deploy/templates/nginx && sudo chown -R rocky /tmp/galaxy-deploy'",
+
+            # 2. Copia tutti i file
+            f"{scp_base} {self.playbook_path} {remote}:/tmp/galaxy-deploy/deploy.yml",
+            f"{scp_base} {self.requirements_path} {remote}:/tmp/galaxy-deploy/requirements.yml",
+            f"{scp_base} {self.group_vars_path} {remote}:/tmp/galaxy-deploy/group_vars/all.yml",
+            f"{scp_base} {self.nginx_template_path} {remote}:/tmp/galaxy-deploy/templates/nginx/galaxy.j2",
+
+            # 3. Crea virtualenv e installa ansible
+            f"{ssh_base} {remote} 'sudo dnf install -y python3-pip && sudo python3 -m venv {ANSIBLE_VENV} && sudo {ANSIBLE_VENV}/bin/pip install ansible \"virtualenv<20.22\"'",
+
+            # 4. Installa ruoli ansible
+            f"{ssh_base} {remote} 'sudo {ANSIBLE_VENV}/bin/ansible-galaxy install -r /tmp/galaxy-deploy/requirements.yml -p /tmp/galaxy-deploy/roles'",
+
+            # 5. Esegui playbook in locale sulla VM come root dalla directory corretta
+            (
+                f"{ssh_base} {remote} "
+                f"'cd /tmp/galaxy-deploy && "
+                f"sudo ANSIBLE_ROLES_PATH=/tmp/galaxy-deploy/roles "
+                f"{ANSIBLE_VENV}/bin/ansible-playbook "
+                f"-i localhost, -c local "
+                f"/tmp/galaxy-deploy/deploy.yml "
+                f"2>&1 | sudo tee /tmp/galaxy-deploy/ansible.log; "
+                f"exit ${{PIPESTATUS[0]}}'"
+            ),
+        ]
+
+        for i, step in enumerate(steps):
+            logger.info(f"[{self.uuid}] Step {i+1}/{len(steps)}: {step[:80]}...")
+            res = subprocess.run(step, shell=True)
+            if res.returncode != 0:
+                logger.error(f"[{self.uuid}] Step {i+1} fallito.")
+                return False
+
+        return True
 
     def cleanup(self):
-        """
-        Checks for duplicates path for the playbook and requirements installation.
-        """
         if os.path.exists(self.base_dir):
             shutil.rmtree(self.base_dir)
             logger.info(f"[{self.uuid}] Pulizia cartella temporanea completata.")

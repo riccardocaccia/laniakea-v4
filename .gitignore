@@ -2,6 +2,7 @@ vault_*
 orchestrator.log
 deployment_info*
 *.tfstate
+.terraform*
 *.tfstate.*
 terraform.tfvars
 .terraform/
