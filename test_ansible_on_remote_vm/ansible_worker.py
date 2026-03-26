@@ -74,7 +74,7 @@ class AnsibleWorker:
             f"{scp_base} {self.nginx_template_path} {remote}:/tmp/galaxy-deploy/templates/nginx/galaxy.j2",
 
             # 3. Crea virtualenv e installa ansible
-            f"{ssh_base} {remote} 'sudo dnf install -y python3-pip && sudo python3 -m venv {ANSIBLE_VENV} && sudo {ANSIBLE_VENV}/bin/pip install ansible \"virtualenv<20.22\"'",
+            f"{ssh_base} {remote} 'sudo dnf install -y python3-pip git && sudo python3 -m venv {ANSIBLE_VENV} && sudo {ANSIBLE_VENV}/bin/pip install ansible \"virtualenv<20.22\"'",
 
             # 4. Installa ruoli ansible
             f"{ssh_base} {remote} 'sudo {ANSIBLE_VENV}/bin/ansible-galaxy install -r /tmp/galaxy-deploy/requirements.yml -p /tmp/galaxy-deploy/roles'",
@@ -86,6 +86,7 @@ class AnsibleWorker:
                 f"sudo ANSIBLE_ROLES_PATH=/tmp/galaxy-deploy/roles "
                 f"{ANSIBLE_VENV}/bin/ansible-playbook "
                 f"-i localhost, -c local "
+                f"-e \"target_hosts=localhost\" "
                 f"/tmp/galaxy-deploy/deploy.yml "
                 f"2>&1 | sudo tee /tmp/galaxy-deploy/ansible.log; "
                 f"exit ${{PIPESTATUS[0]}}'"
